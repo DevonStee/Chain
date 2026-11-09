@@ -5,14 +5,21 @@ enum ChainMaintenance {
 
     static func restartFinderExtension() {
         Task.detached(priority: .userInitiated) {
-            do {
-                if let extensionURL = finderExtensionURL() {
-                    try await run("/usr/bin/pluginkit", arguments: ["-a", extensionURL.path])
-                }
-                try await run("/usr/bin/pluginkit", arguments: ["-e", "use", "-i", extensionBundleIdentifier])
-            } catch {
-                NSLog("Chain: failed to restart extension - \(error)")
+            _ = await registerFinderExtension()
+        }
+    }
+
+    /// Returns whether pluginkit accepted the extension.
+    static func registerFinderExtension() async -> Bool {
+        do {
+            if let extensionURL = finderExtensionURL() {
+                try await run("/usr/bin/pluginkit", arguments: ["-a", extensionURL.path])
             }
+            try await run("/usr/bin/pluginkit", arguments: ["-e", "use", "-i", extensionBundleIdentifier])
+            return true
+        } catch {
+            NSLog("Chain: failed to register extension - \(error)")
+            return false
         }
     }
 

@@ -123,7 +123,10 @@ struct MenuBarContentView: View {
 
             Toggle(
                 ChainAppCatalog.customCommandTitle,
-                isOn: $customCommandModel.enabled
+                isOn: Binding(
+                    get: { customCommandModel.isActive },
+                    set: { customCommandModel.enabled = $0 }
+                )
             )
             .disabled(!customCommandModel.canEnable)
         } header: {
@@ -132,6 +135,7 @@ struct MenuBarContentView: View {
         .onAppear {
             appSelectionModel.refreshInstalled()
             customCommandModel.refreshInstalled()
+            launchAtLoginModel.refresh()
         }
 
         Divider()
@@ -151,6 +155,12 @@ struct MenuBarContentView: View {
             )
         ) {
             Label(ChainAppCatalog.launchAtLoginTitle, systemImage: "arrow.up.forward.app")
+        }
+
+        if launchAtLoginModel.requiresApproval {
+            Button(ChainAppCatalog.launchAtLoginApprovalTitle) {
+                launchAtLoginModel.openLoginItemsSettings()
+            }
         }
 
         if let errorMessage = launchAtLoginModel.errorMessage {

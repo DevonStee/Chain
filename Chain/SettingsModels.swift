@@ -3,8 +3,15 @@ import SwiftUI
 
 @MainActor
 final class LaunchAtLoginModel: ObservableObject {
-    @Published private(set) var isEnabled = SMAppService.mainApp.status == .enabled
+    @Published private(set) var status = SMAppService.mainApp.status
     @Published var errorMessage: String?
+
+    var isEnabled: Bool { status == .enabled }
+    var requiresApproval: Bool { status == .requiresApproval }
+
+    func refresh() {
+        status = SMAppService.mainApp.status
+    }
 
     func setEnabled(_ enabled: Bool) {
         errorMessage = nil
@@ -14,11 +21,14 @@ final class LaunchAtLoginModel: ObservableObject {
             } else {
                 try SMAppService.mainApp.unregister()
             }
-            isEnabled = enabled
         } catch {
             errorMessage = error.localizedDescription
-            isEnabled = SMAppService.mainApp.status == .enabled
         }
+        refresh()
+    }
+
+    func openLoginItemsSettings() {
+        SMAppService.openSystemSettingsLoginItems()
     }
 }
 
@@ -26,6 +36,7 @@ final class LaunchAtLoginModel: ObservableObject {
 final class AppSelectionModel: ObservableObject {
     @Published var selectedApps: Set<ChainSupportedApp>
     @Published var installedApps: [ChainSupportedApp] = []
+    private var unavailableApps: Set<ChainSupportedApp> = []
 
     init() {
         selectedApps = Set(ChainSettings.selectedApps)
@@ -34,14 +45,12 @@ final class AppSelectionModel: ObservableObject {
 
     func refreshInstalled() {
         installedApps = ChainSupportedApp.allCases.filter(\.isInstalled)
-        var pruned = selectedApps.filter { installedApps.contains($0) }
-        if pruned.isEmpty, let first = installedApps.first {
-            pruned = [first]
-        }
-        if pruned != selectedApps {
-            selectedApps = pruned
-            save()
-        }
+        let current = ChainAppSelection(active: selectedApps, unavailable: unavailableApps)
+        let next = current.reconciled(installed: installedApps, maxCount: ChainSettings.maxSelection)
+        guard next != current else { return }
+        selectedApps = next.active
+        unavailableApps = next.unavailable
+        save()
     }
 
     func toggle(_ app: ChainSupportedApp) {
@@ -67,9 +76,7 @@ final class AppSelectionModel: ObservableObject {
     }
 
     private func save() {
-        // Preserve enum ordering
-        let ordered = ChainSupportedApp.allCases.filter { selectedApps.contains($0) }
-        ChainSettings.setSelectedApps(ordered)
+        ChainSettings.setSelectedApps(ChainAppSelection(active: selectedApps, unavailable: unavailableApps).persisted)
     }
 }
 
@@ -119,5 +126,6 @@ final class CustomCommandModel: ObservableObject {
         }
     }
 
-    var canEnable: Bool { !command.isEmpty && !installedTerminals.isEmpty }
+    var canEnable: Bool { ChainSettings.isRunnableCommand(command) && !installedTerminals.isEmpty }
+    var isActive: Bool { enabled && canEnable }
 }

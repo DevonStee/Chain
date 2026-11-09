@@ -31,47 +31,60 @@ struct ChainMenuModelTests {
         assertMenu(ChainSupportedApp.allCases.count == 31, "should have 31 supported apps")
 
         // URL scheme round-trip
+        ChainSettings.ensureCommandNonce()
         let dir = URL(fileURLWithPath: "/tmp/test", isDirectory: true)
 
-        let appURL = ChainCommandURL.makeURL(action: .openIn, directory: dir, app: .ghostty)
-        assertMenu(appURL != nil, "app URL should build")
-        if let parsed = appURL.flatMap(ChainCommandURL.parse) {
-            assertMenu(parsed.action == .openIn, "action should parse")
-            assertMenu(parsed.app == .ghostty, "app should parse")
-            assertMenu(parsed.directory.path == dir.path, "directory should parse")
-        } else {
-            assertMenu(false, "app URL should parse")
+        func roundTrip(_ command: ChainCommand) -> ChainCommand? {
+            ChainCommandURL.makeURL(command).flatMap(ChainCommandURL.parse)
         }
 
-        let mdURL = ChainCommandURL.makeURL(action: .createMarkdownFile, directory: dir)
-        assertMenu(mdURL != nil, "markdown URL should build")
-        if let parsed = mdURL.flatMap(ChainCommandURL.parse) {
-            assertMenu(parsed.action == .createMarkdownFile, "markdown action should parse")
-            assertMenu(parsed.app == nil, "markdown should have no app")
-        } else {
-            assertMenu(false, "markdown URL should parse")
+        for command in [
+            ChainCommand.openIn(.ghostty, directory: dir),
+            .createMarkdownFile(directory: dir),
+            .runCustomCommand(directory: dir),
+            // Special characters (spaces, unicode)
+            .openIn(.vscode, directory: URL(fileURLWithPath: "/tmp/My Folder", isDirectory: true)),
+            .openIn(.zed, directory: URL(fileURLWithPath: "/tmp/项目文件夹", isDirectory: true)),
+        ] {
+            assertMenu(roundTrip(command) == command, "\(command) should round-trip")
         }
 
-        // URL round-trip with special characters (spaces, unicode)
-        let spaceDir = URL(fileURLWithPath: "/tmp/My Folder", isDirectory: true)
-        let spaceURL = ChainCommandURL.makeURL(action: .openIn, directory: spaceDir, app: .vscode)
-        assertMenu(spaceURL != nil, "URL with spaces should build")
-        if let parsed = spaceURL.flatMap(ChainCommandURL.parse) {
-            assertMenu(parsed.directory.path == spaceDir.path, "path with spaces should round-trip")
-            assertMenu(parsed.app == .vscode, "app should round-trip with space path")
+        // An openIn URL must name a valid app; the type can no longer represent one without it.
+        if let valid = ChainCommandURL.makeURL(.openIn(.ghostty, directory: dir)),
+           var components = URLComponents(url: valid, resolvingAgainstBaseURL: false) {
+            components.queryItems?.removeAll { $0.name == "app" }
+            assertMenu(components.url.flatMap(ChainCommandURL.parse) == nil, "openIn without an app should be rejected")
         } else {
-            assertMenu(false, "URL with spaces should parse")
+            assertMenu(false, "openIn URL should build")
         }
 
-        let unicodeDir = URL(fileURLWithPath: "/tmp/项目文件夹", isDirectory: true)
-        let unicodeURL = ChainCommandURL.makeURL(action: .openIn, directory: unicodeDir, app: .zed)
-        assertMenu(unicodeURL != nil, "URL with unicode should build")
-        if let parsed = unicodeURL.flatMap(ChainCommandURL.parse) {
-            assertMenu(parsed.directory.path == unicodeDir.path, "unicode path should round-trip")
-            assertMenu(parsed.app == .zed, "app should round-trip with unicode path")
+        if let finishSetup = ChainCommandURL.finishSetupURL {
+            assertMenu(ChainCommandURL.parse(finishSetup) == nil, "finish-setup URL should carry no command")
         } else {
-            assertMenu(false, "URL with unicode should parse")
+            assertMenu(false, "finish-setup URL should build")
         }
+
+        // Selection keeps apps that are temporarily unavailable
+        let start = ChainAppSelection(active: [.terminal, .zed], unavailable: [])
+        let unplugged = start.reconciled(installed: [.terminal], maxCount: 3)
+        assertMenu(unplugged.active == [.terminal], "unavailable app should leave the active set")
+        assertMenu(unplugged.unavailable == [.zed], "unavailable app should stay remembered")
+        assertMenu(unplugged.persisted == [.terminal, .zed], "remembered app should still be stored")
+        let replugged = unplugged.reconciled(installed: [.terminal, .zed], maxCount: 3)
+        assertMenu(replugged == start, "returning app should be selected again")
+
+        let full = ChainAppSelection(active: [.terminal, .kitty, .warp], unavailable: [.zed])
+            .reconciled(installed: [.terminal, .kitty, .warp, .zed], maxCount: 3)
+        assertMenu(full.active == [.terminal, .kitty, .warp], "returning app should not displace current choices")
+
+        let noneLeft = ChainAppSelection(active: [.zed], unavailable: [])
+            .reconciled(installed: [.terminal], maxCount: 3)
+        assertMenu(noneLeft.active == [.terminal] && noneLeft.unavailable == [.zed], "should fall back but keep remembering")
+
+        // Custom command rule
+        assertMenu(!ChainSettings.isRunnableCommand(""), "empty command should not run")
+        assertMenu(!ChainSettings.isRunnableCommand("  \n"), "blank command should not run")
+        assertMenu(ChainSettings.isRunnableCommand("ls"), "real command should run")
 
         // ChainSupportedApp raw value round-trip (same encoding ChainSettings uses)
         for app in ChainSupportedApp.allCases {

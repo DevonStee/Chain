@@ -15,6 +15,7 @@ struct ChainShellCommandTests {
         testShellSelection()
         testQuoting()
         try testPosixWrapperRunsSafelyInHostileDirectory()
+        try testWrapperHoldsTerminalInEveryPosixShell()
         testEveryCustomCommandTerminalHasALaunch()
         testAppleScriptLaunches()
         testCLILaunches()
@@ -75,6 +76,30 @@ struct ChainShellCommandTests {
         for folder in [base, hostile] {
             let injected = folder.appendingPathComponent("injected").path
             require(!FileManager.default.fileExists(atPath: injected), "a folder name must not run as a command")
+        }
+    }
+
+    /// Each real shell must reach the close prompt and keep the command's exit status.
+    /// Runs the wrapper with `-c`, so the test does not depend on the user's shell profile.
+    static func testWrapperHoldsTerminalInEveryPosixShell() throws {
+        for path in ["/bin/zsh", "/bin/bash"] {
+            let shell = URL(fileURLWithPath: path)
+            let invocation = ShellCommand.invocation(command: "false", directory: directory.deletingLastPathComponent(), loginShell: shell)
+            guard let wrapper = invocation.arguments.last else {
+                return require(false, "\(path) should have a wrapper script")
+            }
+            let process = Process()
+            let output = Pipe()
+            process.executableURL = shell
+            process.arguments = ["-c", wrapper]
+            process.standardInput = FileHandle.nullDevice
+            process.standardOutput = output
+            process.standardError = FileHandle.nullDevice
+            try process.run()
+            let text = String(decoding: output.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+            process.waitUntilExit()
+            require(text.contains("Press return to close"), "\(path) should reach the close prompt")
+            require(process.terminationStatus == 1, "\(path) should keep the command's exit status")
         }
     }
 

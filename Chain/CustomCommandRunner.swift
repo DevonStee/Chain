@@ -3,8 +3,8 @@ import Darwin
 
 enum CustomCommandRunner {
     static func run(in directory: URL) {
+        guard ChainSettings.customCommandIsActive else { return }
         let command = ChainSettings.customCommandText
-        guard !command.isEmpty else { return }
         let terminal = ChainSettings.customCommandTerminal
         guard let launch = CustomCommandLaunch.make(
             terminal: terminal,

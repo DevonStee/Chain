@@ -98,6 +98,20 @@ def extension_identifier(bundle):
     return identifier
 
 
+def is_intact(bundle):
+    # Signature only: a good app with an expired profile is still worth restoring.
+    return bundle.exists() and subprocess.run(
+        ["/usr/bin/codesign", "--verify", "--deep", "--strict", str(bundle)],
+        stderr=subprocess.DEVNULL, check=False).returncode == 0
+
+
+def register_extension(bundle):
+    run(["/usr/bin/pluginkit", "-a",
+         str(bundle / "Contents/PlugIns/ChainExtension.appex")])
+    run(["/usr/bin/pluginkit", "-e", "use", "-i", extension_identifier(bundle)])
+    run(["/usr/bin/killall", "Finder"])
+
+
 def repair(repo, state_dir, team=None):
     products = state_dir / "DerivedData/Build/Products/Debug/Chain.app"
     log_path = state_dir / "build.log"
@@ -110,17 +124,21 @@ def repair(repo, state_dir, team=None):
     # Prepare the entire replacement before removing the installed app.
     staging = state_dir / "staging/Chain.app"
     backup = state_dir / "previous/Chain.app"
+    if staging.exists():
+        shutil.rmtree(staging)
     for path in (staging, backup):
-        if path.exists():
-            shutil.rmtree(path)
         path.parent.mkdir(parents=True, exist_ok=True)
     shutil.copytree(products, staging)
     verify(staging)
     if APP.is_symlink():
         raise RuntimeError("Refusing to replace a symlink at /Applications/Chain.app")
-    had_app = APP.exists()
-    if had_app:
+    # A successful run removes the backup, so one found here is from an interrupted
+    # swap. If the installed app is missing or damaged, it is the only good copy.
+    if is_intact(APP):
+        if backup.exists():
+            shutil.rmtree(backup)
         shutil.copytree(APP, backup)
+    has_backup = backup.exists()
     for process in ("Chain", "ChainExtension"):
         subprocess.run(["/usr/bin/pkill", "-x", process], check=False)
     try:
@@ -130,18 +148,22 @@ def repair(repo, state_dir, team=None):
         verify(APP)
         run(["/usr/bin/open", str(APP)])
         time.sleep(2)
-        run(["/usr/bin/pluginkit", "-a",
-             str(APP / "Contents/PlugIns/ChainExtension.appex")])
-        run(["/usr/bin/pluginkit", "-e", "use", "-i", extension_identifier(APP)])
-        run(["/usr/bin/killall", "Finder"])
+        register_extension(APP)
         time.sleep(3)
         run(["/usr/bin/pgrep", "-x", "Chain"], stdout=subprocess.DEVNULL)
     except Exception:
         if APP.exists():
             shutil.rmtree(APP)
-        if had_app:
+        if has_backup:
             shutil.copytree(backup, APP)
             subprocess.run(["/usr/bin/open", str(APP)], check=False)
+            time.sleep(2)
+            try:
+                register_extension(APP)
+            except Exception as error:
+                # Keep the install failure as the error that gets reported.
+                print("Rollback could not re-register the Finder extension:",
+                      error, file=sys.stderr, flush=True)
         raise
     shutil.rmtree(staging)
     if backup.exists():

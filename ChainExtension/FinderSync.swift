@@ -4,7 +4,6 @@ import FinderSync
 class FinderSync: FIFinderSync {
     private static let markdownTag = -1
     private var lastMenuKind: ChainMenuKind = .contextualItems
-    private var lastSelectedApps: [ChainSupportedApp] = []
 
     override init() {
         super.init()
@@ -46,14 +45,20 @@ class FinderSync: FIFinderSync {
             return NSMenu(title: "")
         }
 
-        lastSelectedApps = ChainSettings.selectedApps.filter(\.isInstalled)
+        guard ChainSettings.commandNonce != nil else {
+            return finishSetupMenu()
+        }
 
         let menu = NSMenu(title: "")
 
-        for (index, app) in lastSelectedApps.enumerated() {
+        // The stored list can exceed the limit while a remembered app has just come back.
+        let apps = ChainSettings.selectedApps.filter(\.isInstalled).prefix(ChainSettings.maxSelection)
+        for app in apps {
+            guard let appIndex = ChainSupportedApp.allCases.firstIndex(of: app) else { continue }
             let item = NSMenuItem(title: app.menuTitle, action: #selector(openIn(_:)), keyEquivalent: "")
             item.target = self
-            item.tag = index
+            // The tag identifies the app by itself, so the click needs nothing saved from this build.
+            item.tag = appIndex
             item.setAccessibilityLabel("Open this folder in \(app.applicationName)")
             menu.addItem(item)
         }
@@ -64,7 +69,7 @@ class FinderSync: FIFinderSync {
         mdItem.setAccessibilityLabel("Create a new note in this folder")
         menu.addItem(mdItem)
 
-        if ChainSettings.customCommandEnabled && !ChainSettings.customCommandText.isEmpty {
+        if ChainSettings.customCommandIsActive {
             let ccItem = NSMenuItem(title: ChainSettings.effectiveCustomCommandLabel, action: #selector(runCustomCommand(_:)), keyEquivalent: "")
             ccItem.target = self
             ccItem.setAccessibilityLabel("Run the configured custom command in this folder")
@@ -74,23 +79,39 @@ class FinderSync: FIFinderSync {
         return menu
     }
 
+    /// Shown until the main app has created the nonce; commands would be rejected before that.
+    private func finishSetupMenu() -> NSMenu {
+        let menu = NSMenu(title: "")
+        let item = NSMenuItem(title: ChainAppCatalog.finishSetupTitle, action: #selector(finishSetup(_:)), keyEquivalent: "")
+        item.target = self
+        menu.addItem(item)
+        return menu
+    }
+
+    @objc func finishSetup(_ sender: NSMenuItem) {
+        guard let url = ChainCommandURL.finishSetupURL, NSWorkspace.shared.open(url) else {
+            NSLog("Chain: failed to launch the main app")
+            return
+        }
+    }
+
     @objc func openIn(_ sender: NSMenuItem) {
-        guard sender.tag >= 0, sender.tag < lastSelectedApps.count else { return }
-        let app = lastSelectedApps[sender.tag]
+        guard ChainSupportedApp.allCases.indices.contains(sender.tag) else { return }
+        let app = ChainSupportedApp.allCases[sender.tag]
         for directory in currentTargetDirectories() {
-            sendCommand(.openIn, directory: directory, app: app)
+            sendCommand(.openIn(app, directory: directory))
         }
     }
 
     @objc func createMarkdownFile(_ sender: NSMenuItem) {
         for directory in currentTargetDirectories() {
-            sendCommand(.createMarkdownFile, directory: directory)
+            sendCommand(.createMarkdownFile(directory: directory))
         }
     }
 
     @objc func runCustomCommand(_ sender: NSMenuItem) {
         for directory in currentTargetDirectories() {
-            sendCommand(.runCustomCommand, directory: directory)
+            sendCommand(.runCustomCommand(directory: directory))
         }
     }
 
@@ -103,10 +124,13 @@ class FinderSync: FIFinderSync {
         )
     }
 
-    private func sendCommand(_ action: ChainCommandAction, directory: URL, app: ChainSupportedApp? = nil) {
-        guard let url = ChainCommandURL.makeURL(action: action, directory: directory, app: app) else { return }
+    private func sendCommand(_ command: ChainCommand) {
+        guard let url = ChainCommandURL.makeURL(command) else {
+            NSLog("Chain: command URL could not be built")
+            return
+        }
         if !NSWorkspace.shared.open(url) {
-            NSLog("Chain: failed to open command URL for \(action.rawValue)")
+            NSLog("Chain: failed to open command URL for %@", url.host ?? "unknown")
         }
     }
 }

@@ -131,24 +131,48 @@ enum ChainSupportedApp: String, CaseIterable, Codable {
     ]
 }
 
-enum ChainCommandAction: String, CaseIterable {
-    case openIn
-    case createMarkdownFile
-    case runCustomCommand
+/// One request from the Finder extension. Only `openIn` carries an app.
+enum ChainCommand: Equatable {
+    case openIn(ChainSupportedApp, directory: URL)
+    case createMarkdownFile(directory: URL)
+    case runCustomCommand(directory: URL)
 }
 
 enum ChainCommandURL {
+    private enum Action: String, CaseIterable {
+        case openIn
+        case createMarkdownFile
+        case runCustomCommand
+    }
+
     // Reverse-DNS scheme: plain "chain" collides with other apps (e.g. V2Box claims chain:).
     private static let scheme = "com.lursetawet.chain"
     private static let nonceKey = "nonce"
 
-    static func makeURL(action: ChainCommandAction, directory: URL, app: ChainSupportedApp? = nil) -> URL? {
+    /// Launches the main app so it can create the nonce. It carries no command.
+    static var finishSetupURL: URL? { URL(string: "\(scheme)://finishSetup") }
+
+    /// Nil until the main app has created the nonce.
+    static func makeURL(_ command: ChainCommand) -> URL? {
+        guard let nonce = ChainSettings.commandNonce else { return nil }
+        let action: Action
+        let directory: URL
+        var app: ChainSupportedApp?
+        switch command {
+        case .openIn(let target, let commandDirectory):
+            (action, directory, app) = (.openIn, commandDirectory, target)
+        case .createMarkdownFile(let commandDirectory):
+            (action, directory) = (.createMarkdownFile, commandDirectory)
+        case .runCustomCommand(let commandDirectory):
+            (action, directory) = (.runCustomCommand, commandDirectory)
+        }
+
         var components = URLComponents()
         components.scheme = scheme
         components.host = action.rawValue
         var items: [URLQueryItem] = [
             URLQueryItem(name: "path", value: directory.path),
-            URLQueryItem(name: nonceKey, value: ChainSettings.commandNonce),
+            URLQueryItem(name: nonceKey, value: nonce),
         ]
         if let app {
             items.append(URLQueryItem(name: "app", value: app.rawValue))
@@ -157,14 +181,14 @@ enum ChainCommandURL {
         return components.url
     }
 
-    static func parse(_ url: URL) -> (action: ChainCommandAction, directory: URL, app: ChainSupportedApp?)? {
+    static func parse(_ url: URL) -> ChainCommand? {
         guard url.scheme == scheme,
               let host = url.host else {
             return nil
         }
         // URL hosts are case-insensitive per RFC 3986; Foundation lowercases them on macOS 15+
         let hostLower = host.lowercased()
-        guard let action = ChainCommandAction.allCases.first(where: { $0.rawValue.lowercased() == hostLower }),
+        guard let action = Action.allCases.first(where: { $0.rawValue.lowercased() == hostLower }),
               let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
               let path = components.queryItems?.first(where: { $0.name == "path" })?.value else {
             return nil
@@ -172,18 +196,54 @@ enum ChainCommandURL {
         // Reject URLs without a matching nonce — these come from webpages or other
         // apps that don't know the shared secret.
         let providedNonce = components.queryItems?.first(where: { $0.name == nonceKey })?.value
-        guard let providedNonce, providedNonce == ChainSettings.commandNonce else {
+        guard let expectedNonce = ChainSettings.commandNonce, providedNonce == expectedNonce else {
             return nil
         }
-        let appRaw = components.queryItems?.first(where: { $0.name == "app" })?.value
-        let app = appRaw.flatMap { ChainSupportedApp(rawValue: $0) }
-        return (action, URL(fileURLWithPath: path, isDirectory: true), app)
+        let directory = URL(fileURLWithPath: path, isDirectory: true)
+        switch action {
+        case .openIn:
+            let appRaw = components.queryItems?.first(where: { $0.name == "app" })?.value
+            guard let app = appRaw.flatMap({ ChainSupportedApp(rawValue: $0) }) else { return nil }
+            return .openIn(app, directory: directory)
+        case .createMarkdownFile:
+            return .createMarkdownFile(directory: directory)
+        case .runCustomCommand:
+            return .runCustomCommand(directory: directory)
+        }
+    }
+}
+
+/// The user's "Open In" choices. Apps that are not installed right now stay remembered,
+/// so an app on an unplugged drive comes back when the drive does.
+struct ChainAppSelection: Equatable {
+    var active: Set<ChainSupportedApp>
+    var unavailable: Set<ChainSupportedApp>
+
+    /// In enum order, which is the order the menu shows.
+    var persisted: [ChainSupportedApp] {
+        ChainSupportedApp.allCases.filter { active.contains($0) || unavailable.contains($0) }
+    }
+
+    func reconciled(installed: [ChainSupportedApp], maxCount: Int) -> ChainAppSelection {
+        let installedSet = Set(installed)
+        var nextActive = active.intersection(installedSet)
+        // Current choices keep their slots; a returning app only takes a free one.
+        for app in installed where unavailable.contains(app) && nextActive.count < maxCount {
+            nextActive.insert(app)
+        }
+        let nextUnavailable = active.union(unavailable).subtracting(installedSet)
+        if nextActive.isEmpty, let first = installed.first {
+            nextActive = [first]
+        }
+        return ChainAppSelection(active: nextActive, unavailable: nextUnavailable)
     }
 }
 
 enum ChainAppCatalog {
     static let newMarkdownTitle = "New Note"
     static let launchAtLoginTitle = "Launch at Login"
+    static let launchAtLoginApprovalTitle = "Allow in Login Items…"
+    static let finishSetupTitle = "Open Chain to Finish Setup"
     static let restartFinderExtensionTitle = "Not Showing?"
     static let quitTitle = "Quit"
     static let customCommandTitle = "Custom Command"

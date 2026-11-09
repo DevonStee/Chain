@@ -44,7 +44,8 @@ enum ShellCommand {
     }
 
     private static func posixWrapper(command: String, directory: URL) -> String {
-        "cd \(quote(directory.path)) && { \(command); }; status=$?; printf '\\nPress return to close…'; read -r chain_close; exit $status"
+        // Not `status`: zsh makes it read-only, and assigning to it aborts the whole script.
+        "cd \(quote(directory.path)) && { \(command); }; chain_status=$?; printf '\\nPress return to close…'; read -r chain_close; exit $chain_status"
     }
 }
 

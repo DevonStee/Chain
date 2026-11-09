@@ -20,16 +20,23 @@ enum ChainSettings {
 
     /// Shared secret between main app and FinderSync extension. Used to reject
     /// `com.lursetawet.chain://` URLs forged by webpages or other apps.
-    /// The main app creates it at launch; the extension cannot write it.
-    static var commandNonce: String {
-        if let existing = sharedDefaults?.string(forKey: commandNonceKey), !existing.isEmpty {
-            return existing
+    /// Nil until the main app has run `ensureCommandNonce()`.
+    static var commandNonce: String? {
+        guard let existing = sharedDefaults?.string(forKey: commandNonceKey), !existing.isEmpty else {
+            return nil
         }
+        return existing
+    }
+
+    /// Main app only: the extension's access to these settings is read-only.
+    static func ensureCommandNonce() {
+        guard commandNonce == nil else { return }
         var bytes = [UInt8](repeating: 0, count: 24)
-        _ = SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes)
-        let nonce = Data(bytes).base64EncodedString()
-        sharedDefaults?.set(nonce, forKey: commandNonceKey)
-        return nonce
+        guard SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes) == errSecSuccess else {
+            NSLog("Chain: could not generate the command nonce")
+            return
+        }
+        sharedDefaults?.set(Data(bytes).base64EncodedString(), forKey: commandNonceKey)
     }
 
     static var selectedApps: [ChainSupportedApp] {
@@ -74,6 +81,16 @@ enum ChainSettings {
 
     static func setCustomCommandEnabled(_ enabled: Bool) {
         sharedDefaults?.set(enabled, forKey: customCommandEnabledKey)
+    }
+
+    static func isRunnableCommand(_ text: String) -> Bool {
+        !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    /// The one rule for whether the custom command is on. An empty command turns it
+    /// off without forgetting that the user enabled it.
+    static var customCommandIsActive: Bool {
+        customCommandEnabled && isRunnableCommand(customCommandText)
     }
 
     static var customCommandLabel: String {
